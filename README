@@ -1,0 +1,140 @@
+*Problem Statement*
+
+Create a Linux kernel module (in vanilla 5.x Linux) that, when loaded into Linux, will support a new system call called
+sys_crytocopy(infile, outfile, keybuf, keylen, flags)
+
+where "infile" is the name of an input file to encrypt or decrypt, "outfile" is the output file, "keybuf" is a buffer holding the cipher key,
+"keylen" is the length of that buffer, and "flags" determine if you're encrypting or decrypting.
+
+If "flags & 0x1" is non-zero, then encrypt the infile onto the outfile.
+If "flags & 0x2" is non-zero, then decrypt the infile onto the outfile.
+If "flags & 0x4" is non-zero, then copy the infile to the outfile.
+
+******************************************************************************************************************************************************
+
+*User level program which calls the system call*
+
+1. Name of file: xhw1.c
+2. Output object file: test_cryptocopy
+
+xhw1.c parses the argument options using getopt() and populates the structure which is passed as 
+an argument to the syscall
+
+The structure has the following parameters
+{
+    1. input file pointer
+    2. output file pointer
+    3. pointer to the buffer holding the cipher key
+    4. length of the cipher key
+    5. flags 
+}
+
+I have created an alias named "arguments" for this structure
+
+The following options are included:
+-e to encrypt;
+-d to decrypt
+-c to copy (without any encryption)
+-p ARG to specify the encryption/decryption key if needed
+-h to provide a helpful usage message
+input file name
+output file name
+
+The following errors are handled:
+    1. No arguments specified
+    2. Multiple flags provided together, i.e providing more than option for encrypt (-e), decrypt (-d), or copy (-c)
+       will result in error as it means that. For this I have a counter (edc) which is incremented when either of
+       -e, -d or -c is provided. If the counter is more than 1, then I am throwing error.
+    3. Password length < 6
+    4. Password length is empty
+    4. No input or output file provided:
+        For this basically, I am using optind which holds the index value of the next argument to be processed
+        For eg, if the command is "./test_crypto -d -p input.txt output.txt", then input.txt is password, input file is
+        output.txt and output file is not provided. So to handle this case, I am checking the arguments at optind and optind+1
+        after processing the multiple options because input and output files are mandatory 2 arguments.
+    5. Password can't be provided with -c (copy) option
+    6. Password can't be empty with encrypt/decrypt option, for this I am checking the 
+
+Since the password can't be sent in plain text to the kernel, I have hashed it using MD5 to create the cipher text
+which is 16 bytes long
+
+******************************************************************************************************************************************************
+
+Kernel code
+
+1. File Name: sys_cryptocopy.c
+
+Syscall (sys_cryptocopy) implementation:
+    1. First, I get the arguments from user land to kernel space which is nothing but the "arguments" structure
+    2. Then I verify if the structure is not empty, if so then return error
+    3. Get the name of the output and the input files using the getname() API
+    4. Next I check whether the input file is present on the file system or not using vfs_stat which gives the stat structure containing the inode
+       number, permissions, etc. 
+       4.1 If it doesn't exist then exit
+       4.2 Else, check whether the file is a regular file, if not then exit with -EINVAL
+    5. Next check whether the output file is present on the file system or not using vfs_stat which gives the stat structure containing the inode
+       number, permissions, etc.
+       5.1 If it doesn't exist then create the file
+       5.2 Else, mark file_exists flag as True, compare the inode number of the input and output files
+       5.3 if inode number is same, then exit with -EINVAL (hardlink file)
+    6. Open the input file using filp_open
+    7. Create a temporary file of the format <output file name>_<pid of the current process>.tmp.
+       We get the pid of the current process from the current pointer provided by the library asm/current.h
+    8. Open the output file using filp_open
+    9. If flag is 0x01 or 0x02, I am generating the SHA256 of the cipher (MD5) which is of 32 bytes using the 
+       functions as part of crypto/hash.h library
+    10. If flag is 0x01 (encrypt), then write the preamble to the temp file
+        10.1 if the operation fails, then we delete the temp file using vfs_unlink() and if the file_exists
+        is False, then we delete the output file
+    11. If the flag is 0x02 (decrypt), then I read the preamble (which is the first 32 bytes) in the input file 
+        and compare it against the hash calculated in step 9
+        11.1 If preamble verification fails, then exit with error but before that we delete the temp file using vfs_unlink() and if the file_exists
+        is False, then we delete the output file
+    12. If flag is 0x01 (encrypt), then we encrypt the file one page a time using AES algo in CTR mode
+        and write the contents to the temp file. This is done using the library crypto/skcipher.h and linux/scatterlist.h
+    13. If flag is 0x02 (decrypt), then we decrypt the file one page a time using AES algo in CTR mode
+        and write the contents to the temp file. This is done using the library crypto/skcipher.h and linux/scatterlist.h
+    14. If any of steps 12 or 13 fail, then we delete the temp file using vfs_unlink() and if the file_exists
+        is False, then we delete the output file
+    15. If the flag is 0x04 (copy), then we just read one page (4KB) at a time and write it to the temp file
+    16. If the bytes are written successfully to the temp file, then we just rename the file using vfs_rename()
+    17. Else, we delete the temp file using vfs_unlink() and if the file_exists
+        is False, then we delete the output file
+    
+
+    PS1: The mode of the temp file and the output file is the same as the input file
+    PS2: Before doing vfs_rename(), we are acquiring the lock on the file/dir before and 
+         releasing it when the operation is done. Locks : lock_rename(), unlock_rename()
+    PS3: Before doing vfs_unlink() also, we are acquiring the lock before doing the operation
+
+******************************************************************************************************************************************************
+
+New file included in /usr/src/hw1-nrustagi/CSE-506:
+
+    1. test01.h -> Test basic copy functionality
+    2. test02.h -> Test basic encryption/decryption functionality of test_cryptocopy
+    3. test03.h -> NEGATIVE Test: test_cryptocopy should fail when output file is a hardlink of the inputfile 
+                   or vise-versa
+    4. test04.h -> NEGATIVE Test: test_cryptocopy should fail when multiple options (encryption/decryption/copy) provided
+    5. test05.h -> NEGATIVE Test: test_cryptocopy should fail when password is provided with copy option
+    6. test06.h -> NEGATIVE Test: test_cryptocopy should fail when password length is less than equal to 6 characters
+    7. test07.h -> NEGATIVE Test, decryption should fail when different password provided for encryption and decryption
+                   While decrypting, a new output file is provided, but if decryption fails, then that file shouldn't 
+                   exist on the filesytem
+    8. test08.h -> NEGATIVE Test: test_cryptocopy should fail when output file is not provided
+    9. test09.h -> NEGATIVE Test: test_cryptocopy should fail when input file is not provided
+    10. test10.h -> NEGATIVE Test: test_cryptocopy should fail when password not provided with encrypt/decrypt option
+    11. test11.h -> Test basic encryption/decryption functionality with a 30 MB file
+
+    12. sys_cryptocopy.c : Implementation of the syscall
+    13. xhw1.c : User level code to call the syscall
+    14. Makefile
+    15. install_module.sh
+    16. kernel.config
+    17. master_test.sh: Master script to run all the test cases at once
+ 
+******************************************************************************************************************************************************
+
+References
+1. https://www.kernel.org/doc/html/v4.18/crypto/api-samples.html
+2. Prof lecture notes
