@@ -1,4 +1,17 @@
-*Problem Statement*
+
+Usage:
+    Usage: ./test_cryptocopy {-e|-d|-c} -p <password> inputfile outputfile\n"
+	-c: Copy the input file to output file
+	-e: Encrypt the input file to output file
+	-d: Decrypt the input file to output file
+	-p: Password to encrypt/decrypt ONLY; Should be greater than 6 characters
+	inputfile: file to encrypt/decrypt/copy
+	outputfile: file to have the contents after encrypt/decrypt/copy
+	Please specify only of the options of -e|-d|-c
+
+******************************************************************************************************************************************************
+
+Problem Statement
 
 Create a Linux kernel module (in vanilla 5.x Linux) that, when loaded into Linux, will support a new system call called
 sys_crytocopy(infile, outfile, keybuf, keylen, flags)
@@ -12,7 +25,7 @@ If "flags & 0x4" is non-zero, then copy the infile to the outfile.
 
 ******************************************************************************************************************************************************
 
-*User level program which calls the system call*
+User level program which calls the system call
 
 1. Name of file: xhw1.c
 2. Output object file: test_cryptocopy
